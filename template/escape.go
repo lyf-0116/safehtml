@@ -73,6 +73,12 @@ type escaper struct {
 	// derived[c.mangle(name)] maps to a template derived from the template
 	// named name templateName for the start context c.
 	derived map[string]*template.Template
+	// inputKeys[derivedName] is the sanitization-relevant key of the input
+	// context for which derivedName was produced. A completed derivation is
+	// only reused when the current call site has the same key. Provisional
+	// output entries assumed for recursive fixed-point computation have an
+	// output context but no entry in derived; those are always reused.
+	inputKeys map[string]string
 	// called[templateName] is a set of called mangled template names.
 	called map[string]bool
 	// xxxNodeEdits are the accumulated edits to apply during commit.
@@ -89,6 +95,7 @@ func makeEscaper(n *nameSpace) escaper {
 		n,
 		map[string]context{},
 		map[string]*template.Template{},
+		map[string]string{},
 		map[string]bool{},
 		map[*parse.ActionNode][]string{},
 		map[*parse.TemplateNode]string{},
@@ -424,12 +431,18 @@ func (e *escaper) escapeListConditionally(c context, n *parse.ListNode, filter f
 	for k, v := range e.output {
 		e1.output[k] = v
 	}
+	for k, v := range e.inputKeys {
+		e1.inputKeys[k] = v
+	}
 	c = e1.escapeList(c, n)
 	ok := filter != nil && filter(&e1, c)
 	if ok {
 		// Copy inferences and edits from e1 back into e.
 		for k, v := range e1.output {
 			e.output[k] = v
+		}
+		for k, v := range e1.inputKeys {
+			e.inputKeys[k] = v
 		}
 		for k, v := range e1.derived {
 			e.derived[k] = v
@@ -479,17 +492,65 @@ func mangle(c context, templateName string) string {
 	return s
 }
 
+// contextCacheKey produces a key that captures every field of c that
+// determines which sanitization chain applies to an action. Two call sites can
+// share the same state, delimiter, attribute and element names (and therefore
+// the same mangled template name) yet require different sanitizers depending
+// on the script type, the link relation, the attribute value prefix and the
+// branch ambiguity flag, so all of those fields are part of the key.
+//
+// This key is only used for cache bookkeeping and is never used as a template
+// name. Keeping it separate from the mangled name preserves a stable name for
+// recursive template calls whose attribute value prefix grows on every
+// invocation; those calls rely on a stable name to reach the fixed-point fast
+// path in escapeTemplateBody.
+func contextCacheKey(c context) string {
+	var b strings.Builder
+	b.WriteString(mangle(c, ""))
+	if c.scriptType != "" {
+		b.WriteString("|scriptType=")
+		b.WriteString(c.scriptType)
+	}
+	if c.linkRel != "" {
+		b.WriteString("|linkRel=")
+		b.WriteString(c.linkRel)
+	}
+	if c.attr.value != "" {
+		b.WriteString("|attrValue=")
+		b.WriteString(c.attr.value)
+	}
+	if c.attr.ambiguousValue {
+		b.WriteString("|ambiguousAttrValue")
+	}
+	return b.String()
+}
+
 // escapeTree escapes the named template starting in the given context as
 // necessary and returns its output context.
 func (e *escaper) escapeTree(c context, node parse.Node, name string, line int) (context, string) {
 	// Mangle the template name with the input context to produce a reliable
 	// identifier.
-	dname := mangle(c, name)
-	e.called[dname] = true
+	baseName := mangle(c, name)
+	key := contextCacheKey(c)
+	dname := baseName
 	if out, ok := e.output[dname]; ok {
-		// Already escaped.
-		return out, dname
+		// A provisional entry assumed by escapeTemplateBody for an in-progress
+		// recursive call exists in e.output but has no derivation in e.derived
+		// yet; reusing it preserves the fixed-point computation even though the
+		// growing attribute value prefix yields a different key. A completed
+		// derivation (present in e.derived) is reused only when its key matches,
+		// since a different key requires a different sanitization chain.
+		if e.derived[dname] == nil || e.inputKeys[dname] == key {
+			e.called[dname] = true
+			return out, dname
+		}
+		// The base name belongs to a completed derivation for a different
+		// sanitization-relevant context. Reusing its tree would apply a second
+		// set of edits to the same nodes (panicking in the edit* methods), so
+		// derive a distinct template for this call site.
+		dname = e.uniqueDerivedName(baseName)
 	}
+	e.called[dname] = true
 	t := e.template(name)
 	if t == nil {
 		// Two cases: The template exists but is empty, or has never been mentioned at
@@ -509,15 +570,33 @@ func (e *escaper) escapeTree(c context, node parse.Node, name string, line int) 
 		// Use any template derived during an earlier call to escapeTemplate
 		// with different top level templates, or clone if necessary.
 		dt := e.template(dname)
-		if dt == nil {
+		if dt == nil && e.derived[dname] == nil {
 			dt = template.New(dname)
 			dt.Tree = t.Tree.Copy()
 			dt.Tree.Name = dname
 			e.derived[dname] = dt
+			e.inputKeys[dname] = key
+		} else if dt == nil {
+			dt = e.derived[dname]
 		}
 		t = dt
 	}
 	return e.computeOutCtx(c, t), dname
+}
+
+// uniqueDerivedName returns a name derived from base that is not used by any
+// existing template, derivation or cached escaping result in this escaper.
+func (e *escaper) uniqueDerivedName(base string) string {
+	for i := 0; ; i++ {
+		candidate := fmt.Sprintf("%s_ctx%d", base, i)
+		if _, used := e.inputKeys[candidate]; used {
+			continue
+		}
+		if e.template(candidate) != nil {
+			continue
+		}
+		return candidate
+	}
 }
 
 // computeOutCtx takes a template and its start context and computes the output
