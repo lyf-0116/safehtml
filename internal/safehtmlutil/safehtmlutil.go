@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strings"
 )
 
 // IsSafeTrustedResourceURLPrefix returns whether the given prefix is safe to use as a
@@ -47,6 +48,83 @@ func URLContainsDoubleDotSegment(url string) bool {
 }
 
 var urlDoubleDotSegmentPattern = regexp.MustCompile(`(?i)(?:\.|%2e)(?:\.|%2e)`)
+
+// TrustedResourceURLContainsDoubleDotSegment reports whether url contains a ".."
+// dot-segment (RFC3986 3.3) in its path component, in either percent-encoded or
+// unencoded form.
+//
+// Unlike URLContainsDoubleDotSegment, this operates on the fully assembled URL rather
+// than on the individual, not-yet-substituted values. Checking the assembled result
+// enforces the TrustedResourceURL contract at the correct granularity: a ".."
+// dot-segment assembled across substitution or append boundaries is rejected just like
+// one contained in a single value, while dot characters that remain part of legitimate
+// file names or version segments (e.g. "main.html", "v1.2") are left untouched.
+//
+// The query and fragment components are ignored, since dot-segments there do not affect
+// the path hierarchy.
+func TrustedResourceURLContainsDoubleDotSegment(url string) bool {
+	path := trustedResourceURLPath(url)
+	return URLContainsDoubleDotSegment(path)
+}
+
+// trustedResourceURLPath returns the path component of url, stripping any scheme and
+// authority prefix as well as the query and fragment components.
+func trustedResourceURLPath(url string) string {
+	// Discard the query and fragment components.
+	for i := 0; i < len(url); i++ {
+		if url[i] == '?' || url[i] == '#' {
+			url = url[:i]
+			break
+		}
+	}
+	// Discard the scheme and authority in absolute URLs ("https://example.com/path" or
+	// "//example.com/path") so that dots in the host name are not mistaken for path
+	// dot-segments.
+	if rest, ok := stripSchemeAndAuthority(url); ok {
+		return rest
+	}
+	return url
+}
+
+// stripSchemeAndAuthority removes any leading scheme and "//authority" component from
+// url. It reports false if url has no authority component.
+func stripSchemeAndAuthority(url string) (string, bool) {
+	rest := url
+	if i := strings.IndexByte(rest, ':'); i != -1 {
+		// Only treat the prefix as a scheme if it starts with a letter and contains
+		// solely scheme characters, per RFC3986 Section 3.1.
+		scheme := rest[:i]
+		if len(scheme) != 0 && isSchemeStart(scheme[0]) {
+			isScheme := true
+			for j := 1; j < len(scheme); j++ {
+				if !isSchemeChar(scheme[j]) {
+					isScheme = false
+					break
+				}
+			}
+			if isScheme {
+				rest = rest[i+1:]
+			}
+		}
+	}
+	if !strings.HasPrefix(rest, "//") {
+		return url, false
+	}
+	rest = rest[2:]
+	if i := strings.IndexByte(rest, '/'); i != -1 {
+		return rest[i:], true
+	}
+	// The URL consists solely of an authority and has no path.
+	return "", true
+}
+
+func isSchemeStart(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+}
+
+func isSchemeChar(c byte) bool {
+	return isSchemeStart(c) || '0' <= c && c <= '9' || c == '+' || c == '-' || c == '.'
+}
 
 // QueryEscapeURL produces an output that can be embedded in a URL query.
 // The output can be embedded in an HTML attribute without further escaping.

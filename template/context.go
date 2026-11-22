@@ -165,6 +165,13 @@ type attr struct {
 	value string
 	// ambiguousValue indicates whether value contains an ambiguous value due to context-joining.
 	ambiguousValue bool
+	// trURLDotBoundary tracks dot-segment state at the boundary between static template
+	// text and dynamic actions inside the value of an attribute in the
+	// sanitizationContextTrustedResourceURL context. It is used to reject ".." dot-segments
+	// assembled across action boundaries even when no single action value itself contains
+	// "..", e.g. the two adjacent actions in
+	//    <link href="/path/{{ "." }}{{ "." }}/foo">
+	trURLDotBoundary trURLDotBoundaryState
 	// names contains all possible names the attribute could assume because of context joining.
 	// For example, after joining the contexts in the "if" and "else" branches of
 	//     <a {{if .C}}title{{else}}name{{end}}="foo">
@@ -173,6 +180,21 @@ type attr struct {
 	// names will be empty if no context joining occurred.
 	names []string
 }
+
+// trURLDotBoundaryState describes how the most recent dynamic action in a
+// TrustedResourceURL attribute value may contribute dots at the boundary with the next
+// dynamic action.
+type trURLDotBoundaryState uint8
+
+const (
+	// trURLDotBoundaryNone means the boundary cannot start or complete a ".." dot-segment
+	// across actions: either we are not in the path component, the preceding text ends with
+	// a path separator, or the preceding action cannot end in a dot.
+	trURLDotBoundaryNone trURLDotBoundaryState = iota
+	// trURLDotBoundaryDynamicDot means the preceding dynamic action may end in a dot, so a
+	// following dynamic action that starts with a dot would complete a ".." dot-segment.
+	trURLDotBoundaryDynamicDot
+)
 
 // eq reports whether a and b have the same name. All other fields are ignored.
 func (a attr) eq(b attr) bool {

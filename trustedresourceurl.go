@@ -155,6 +155,13 @@ func trustedResourceURLFormat(format string, args map[string]string) (TrustedRes
 		// segments or URL components.
 		return safehtmlutil.QueryEscapeURL(argVal)
 	})
+	if err == nil && safehtmlutil.TrustedResourceURLContainsDoubleDotSegment(ret) {
+		// The per-argument check above cannot see dot-segments assembled across marker
+		// boundaries, e.g. format "/%{a}%{b}" with args {"a": ".", "b": "."}. Validate the
+		// fully assembled URL to make sure no ".." dot-segment can be constructed by
+		// combining single dots from separate arguments values.
+		return TrustedResourceURL{}, fmt.Errorf(`TrustedResourceURL format string %q must not expand to a URL containing a ".." dot-segment`, format)
+	}
 	return TrustedResourceURL{ret}, err
 }
 
@@ -191,5 +198,12 @@ func TrustedResourceURLAppend(t TrustedResourceURL, s string) (TrustedResourceUR
 	if !safehtmlutil.IsSafeTrustedResourceURLPrefix(t.str) {
 		return TrustedResourceURL{}, fmt.Errorf("cannot append to TrustedResourceURL %q because it has an unsafe prefix", t)
 	}
-	return TrustedResourceURL{t.str + safehtmlutil.QueryEscapeURL(s)}, nil
+	ret := t.str + safehtmlutil.QueryEscapeURL(s)
+	if safehtmlutil.TrustedResourceURLContainsDoubleDotSegment(ret) {
+		// Validate the assembled URL rather than s alone: a ".." dot-segment can be built
+		// across append calls even when no single appended value contains one, e.g.
+		// appending "." twice to a URL ending in "/" produces a trailing "..".
+		return TrustedResourceURL{}, fmt.Errorf(`cannot append %q to TrustedResourceURL %q: the resulting URL must not contain a ".." dot-segment`, s, t)
+	}
+	return TrustedResourceURL{ret}, nil
 }

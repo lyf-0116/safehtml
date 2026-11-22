@@ -172,6 +172,27 @@ func TestTrustedResourceURLFormat(t *testing.T) {
 			``,
 			`argument "doubleDot" with value ".." must not contain ".."`,
 		},
+		{
+			"double dot assembled across markers disallowed",
+			`/%{a}%{b}`,
+			map[string]string{"a": `.`, "b": `.`},
+			``,
+			`TrustedResourceURL format string "/%{a}%{b}" must not expand to a URL containing a ".." dot-segment`,
+		},
+		{
+			"single dots separated by static text allowed",
+			`/%{a}/%{b}`,
+			map[string]string{"a": `.`, "b": `.`},
+			`/./.`,
+			``,
+		},
+		{
+			"dots in file names stay readable",
+			`/static/%{file}`,
+			map[string]string{"file": `app.min.v1.2.js`},
+			`/static/app.min.v1.2.js`,
+			``,
+		},
 	} {
 		got, err := trustedResourceURLFormat(test.format, test.args)
 		if test.err != "" && err == nil {
@@ -231,6 +252,21 @@ func TestTrustedResourceURLAppend(t *testing.T) {
 			baseURL:  TrustedResourceURLFromConstant("not.good"),
 			toAppend: "foo",
 			err:      true,
+		}, {
+			name:     "double dot appended directly",
+			baseURL:  TrustedResourceURLFromConstant("//base.url/"),
+			toAppend: "..",
+			err:      true,
+		}, {
+			name:     "dotted file name appended",
+			baseURL:  TrustedResourceURLFromConstant("//base.url/"),
+			toAppend: "app.min.js",
+			wantURL:  "//base.url/app.min.js",
+		}, {
+			name:     "dot in query appended",
+			baseURL:  TrustedResourceURLFromConstant("//base.url/foo?x=1"),
+			toAppend: "&y=..",
+			wantURL:  "//base.url/foo?x=1%26y%3d..",
 		},
 	} {
 		u, err := TrustedResourceURLAppend(tc.baseURL, tc.toAppend)
@@ -243,5 +279,19 @@ func TestTrustedResourceURLAppend(t *testing.T) {
 		if got, want := u.String(), tc.wantURL; got != want {
 			t.Errorf("%s: got: %q, want: %q", tc.name, got, want)
 		}
+	}
+}
+
+func TestTrustedResourceURLAppendSplitDot(t *testing.T) {
+	base := TrustedResourceURLFromConstant("/static/")
+	first, err := TrustedResourceURLAppend(base, ".")
+	if err != nil {
+		t.Fatalf("first append returned unexpected error: %v", err)
+	}
+	if got, want := first.String(), "/static/."; got != want {
+		t.Fatalf("after first append: got %q, want %q", got, want)
+	}
+	if _, err := TrustedResourceURLAppend(first, "."); err == nil {
+		t.Fatal("appending a second dot that assembles a \"..\" dot-segment must fail")
 	}
 }

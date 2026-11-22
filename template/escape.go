@@ -154,6 +154,11 @@ func (e *escaper) escapeAction(c context, n *parse.ActionNode) context {
 	case stateAttrName, stateTag:
 		c.state = stateAttrName
 	}
+	if next, ok := validateTrustedResourceURLAction(c, n); !ok {
+		return next
+	} else {
+		c = next
+	}
 	// TODO: integrate sanitizerForContext into escapeAction.
 	s, err := sanitizerForContext(c)
 	if err != nil {
@@ -320,6 +325,12 @@ func join(a, b context, node parse.Node, nodeName string) context {
 	a.attr.names = joinNames(a.attr.name, b.attr.name, a.attr.names, b.attr.names)
 	if a.attr.value != b.attr.value {
 		a.attr.ambiguousValue = true
+	}
+	// Preserve any dynamic dot boundary reached inside a conditional branch. The else
+	// branch might not reach the same boundary (e.g. it can be empty), so merge
+	// conservatively: if either branch can end in a dynamic dot, the joined context can.
+	if b.attr.trURLDotBoundary == trURLDotBoundaryDynamicDot {
+		a.attr.trURLDotBoundary = trURLDotBoundaryDynamicDot
 	}
 
 	if a.eq(b) {
@@ -654,6 +665,10 @@ func (e *escaper) escapeText(c context, n *parse.TextNode) context {
 		}
 		e.editTextNode(n, b.Bytes())
 	}
+	// Static template text separates adjacent actions, so a ".." dot-segment can no longer
+	// be assembled across the previous action boundary. This also resets the state when the
+	// attribute ends, since the context leaves stateAttr via static text such as `">`.
+	c.attr.trURLDotBoundary = trURLDotBoundaryNone
 	return c
 }
 

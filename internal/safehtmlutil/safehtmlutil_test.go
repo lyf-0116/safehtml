@@ -108,6 +108,40 @@ func TestURLContainsDoubleDotSegment(t *testing.T) {
 	}
 }
 
+func TestTrustedResourceURLContainsDoubleDotSegment(t *testing.T) {
+	for _, test := range [...]struct {
+		in   string
+		want bool
+	}{
+		// Dot-segments in the path, in encoded and unencoded forms.
+		{`/..`, true},
+		{`/path/../foo`, true},
+		{`/path/%2e%2e/foo`, true},
+		{`/path/%2E%2E/foo`, true},
+		{`https://example.com/../foo`, true},
+		{`//example.com/..`, true},
+		{`/path/foo../bar`, true},
+		{`about:blank#/../foo`, false},
+		// Legitimate dots in file names and version segments stay readable.
+		{`/path/main.html`, false},
+		{`/path/v1.2/app.js`, false},
+		{`https://example.com/static/app.min.js`, false},
+		{`//example.com/a.b/c.d`, false},
+		{`/path/./bar`, false},
+		{`/path/.foo./bar`, false},
+		// Dots in the host name must not be mistaken for path dot-segments.
+		{`https://www.example.com/foo`, false},
+		{`//www.example.com/foo`, false},
+		// Dots in query or fragment components do not affect the path hierarchy.
+		{`/path/foo?x=..`, false},
+		{`/path/foo#../bar`, false},
+	} {
+		if got := TrustedResourceURLContainsDoubleDotSegment(test.in); got != test.want {
+			t.Errorf("TrustedResourceURLContainsDoubleDotSegment(%q) = %t, want %t", test.in, got, test.want)
+		}
+	}
+}
+
 func TestNormalizeURL(t *testing.T) {
 	for _, test := range [...]struct {
 		url, want string

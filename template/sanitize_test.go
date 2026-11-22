@@ -582,6 +582,53 @@ func TestSanitize(t *testing.T) {
 			err:    `cannot substitute ".." after TrustedResourceURL prefix: ".." is disallowed`,
 		},
 		{
+			input:  `<link href="/path/{{ "." }}{{ "." }}/foo">`,
+			output: ``,
+			err:    `cannot escape action {{"."}}: adjacent actions in a TrustedResourceURL attribute value must not combine into a ".." dot-segment`,
+		},
+		{
+			input:  `<link href="/path/{{ "." }}/{{ "." }}/foo">`,
+			output: `<link href="/path/././foo">`,
+			err:    ``,
+		},
+		{
+			input:  `<link href="https://www.foo.com/{{ "app.min.js" }}">`,
+			output: `<link href="https://www.foo.com/app.min.js">`,
+			err:    ``,
+		},
+		{
+			// Adjacent non-constant actions are not conservatively rejected; only provable
+			// dot combinations are blocked.
+			input:  `<link href="https://www.foo.com/dir/{{ "a" }}{{ "b" }}">`,
+			output: `<link href="https://www.foo.com/dir/ab">`,
+			err:    ``,
+		},
+		{
+			input:  `<link href="https://www.foo.com/dir/{{ "a" }}x{{ "b" }}">`,
+			output: `<link href="https://www.foo.com/dir/axb">`,
+			err:    ``,
+		},
+		{
+			input:  `<link href="https://www.foo.com/file.{{ "html" }}">`,
+			output: `<link href="https://www.foo.com/file.html">`,
+			err:    ``,
+		},
+		{
+			input:  `<link href="https://www.foo.com/foo?a={{ "." }}&b={{ "." }}">`,
+			output: `<link href="https://www.foo.com/foo?a=.&b=.">`,
+			err:    ``,
+		},
+		{
+			input:  `<link href="/p/{{ "." }}{{with .T}}{{ "." }}{{end}}/x">`,
+			output: ``,
+			err:    `cannot escape action {{"."}}: adjacent actions in a TrustedResourceURL attribute value must not combine into a ".." dot-segment`,
+		},
+		{
+			input:  `<link href="/p/{{if .T}}{{ "." }}{{end}}{{ "." }}">`,
+			output: ``,
+			err:    `cannot escape action {{"."}}: adjacent actions in a TrustedResourceURL attribute value must not combine into a ".." dot-segment`,
+		},
+		{
 			// Invalid UTF-8.
 			input:  `<link href="/foo?{{ "\xFF\xFE\xFD" }}">`,
 			output: `<link href="/foo?%ff%fe%fd">`,
